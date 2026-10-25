@@ -1,0 +1,29 @@
+.venv/
+__pycache__/
+*.pyc
+
+# Local source work and demonstration (never publish).
+/works/
+/stories/demo/
+/tools/create_demo_art.py
+/.local/
+/preview/
+.env
+.env.*
+
+# Only reviewed, completed student packages are published.
+/stories/*/
+!/stories/three_paths/
+!/stories/forest_escape/
+!/stories/outbreak/
+!/stories/jurassic_day/
+
+# Production notes and verification output are not playable story assets.
+/stories/*/production/
+/stories/*/references/
+/stories/*/preview/
+/stories/*/art-prompts.json
+/stories/*/validation.json
+/stories/*/verify.py
+/stories/*/export-art.ps1
+/stories/*/storyboard.md
