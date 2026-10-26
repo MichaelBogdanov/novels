@@ -50,6 +50,7 @@ class App(Library):
         self.muted = False
         self.sound = None
         self.hidden = self.history = False
+        self.toolbar_open = False
         self.running = True
         self.buttons = []
         self.font_path = pg.font.match_font("segoeui,dejavusans,arial")
@@ -95,7 +96,7 @@ class App(Library):
             raise StoryError(f"Не удалось загрузить арт {path}: {exc}") from exc
 
     def configure_layout(self):
-        self.layout = Layout(self.window.get_size())
+        self.layout = Layout(self.window.get_size(), toolbar_open=self.toolbar_open)
         self.canvas = pg.Surface(self.window.get_size())
         self.viewport = self.canvas.get_rect()
         self.font = pg.font.Font(self.font_path, self.layout.body_size)
@@ -121,7 +122,7 @@ class App(Library):
         self.page_text = text[self.page.start:self.page.end]
 
     def ensure_layout(self):
-        if self.canvas.get_size() == self.window.get_size():
+        if self.canvas.get_size() == self.window.get_size() and self.layout.toolbar_open == self.toolbar_open:
             return False
         visible = getattr(self, "visible", 0)
         self.configure_layout()
@@ -230,13 +231,16 @@ class App(Library):
         self.canvas.blit(self.background, (0, 0))
         if not self.hidden:
             l, p = self.layout, self.layout.pad
-            self.panel(l.header, 185, radius=p)
-            self.text(self.elide(self.story.title, self.label, l.title.width), l.title.topleft, self.label)
-            labels = ["Окно · F11" if self.display.fullscreen else "Экран · F11",
-                      "Назад · ←", "Журнал · Tab", "Скрыть · H",
-                      "Звук: выкл · M" if self.muted else "Звук: вкл · M", "Истории", "Выход"]
-            for rect, label, action in zip(l.toolbar, labels, ("fullscreen", "back", "history", "hide", "mute", "library", "quit")):
-                self.button(rect, label, (action,), action != "back" or len(self.session.frames) > 1)
+            self.button(l.toolbar_toggle, "Свернуть · F2" if self.toolbar_open else "Меню · F2",
+                        ("toolbar",), active=self.toolbar_open)
+            if self.toolbar_open:
+                self.panel(l.header, 185, radius=p)
+                self.text(self.elide(self.story.title, self.label, l.title.width), l.title.topleft, self.label)
+                labels = ["Окно · F11" if self.display.fullscreen else "Экран · F11",
+                          "Назад · ←", "Журнал · Tab", "Скрыть · H",
+                          "Звук: выкл · M" if self.muted else "Звук: вкл · M", "Истории", "Выход"]
+                for rect, label, action in zip(l.toolbar, labels, ("fullscreen", "back", "history", "hide", "mute", "library", "quit")):
+                    self.button(rect, label, (action,), action != "back" or len(self.session.frames) > 1)
             self.panel(l.dialogue, 218, radius=p)
             speaker = self.session.node.get("speaker", "") or "Повествование"
             self.text(self.elide(speaker, self.label, l.body.width), l.speaker, self.label, ACCENT)
@@ -272,11 +276,22 @@ class App(Library):
             height = max(self.layout.button_height, len(lines) * self.label.get_linesize() + self.layout.pad * 2)
             layout.append((i, y, height, lines))
             y += height + self.layout.gap
-        return layout, y
+        return layout, max(0, y - self.layout.gap)
+
+    def fit_choices(self):
+        # Short lists stay close to the dialogue; long lists retain a scroll viewport.
+        _, total = self.choice_layout()
+        bounds = self.layout.choice_bounds
+        height = min(bounds.height, max(1, total))
+        self.layout.choices = pg.Rect(bounds.x, bounds.bottom - height, bounds.width, height)
+        self.layout.choice_heading_y = self.layout.choices.top - self.layout.small_size * (3 if self.layout.compact else 2)
 
     def draw_choices(self):
+        self.fit_choices()
         area = self.layout.choices
         l, p = self.layout, self.layout.pad
+        self.panel((area.x - l.gap, l.choice_heading_y - l.gap // 2,
+                    area.width + l.gap * 2, area.y - l.choice_heading_y), 225, radius=l.gap)
         heading = f"ВАШ ВЫБОР · {self.focus + 1} / {len(self.session.node['choices'])}"
         self.text(heading, (area.x, l.choice_heading_y), self.small, ACCENT)
         hint = "Колесо / ↑ ↓ — выделить · Enter / ЛКМ — выбрать"
@@ -306,6 +321,7 @@ class App(Library):
             pg.draw.rect(self.canvas, ACCENT, (track.x, thumb_y, track.width, thumb_height), border_radius=2)
 
     def move_choice(self, delta, wrap_around=False):
+        self.fit_choices()
         count = len(self.session.node["choices"])
         target = self.focus + delta
         self.focus = target % count if wrap_around else max(0, min(target, count - 1))
@@ -396,7 +412,10 @@ class App(Library):
 
     def dispatch(self, action):
         kind = action[0]
-        if kind == "quit":
+        if kind == "toolbar":
+            self.toolbar_open = not self.toolbar_open
+            self.ensure_layout()
+        elif kind == "quit":
             self.stop_sound()
             self.running = False
         elif kind == "library":
@@ -461,6 +480,8 @@ class App(Library):
                     self.history = False
                 elif key in (pg.K_UP, pg.K_DOWN):
                     self.scroll += -self.history_step if key == pg.K_UP else self.history_step
+            elif key == pg.K_F2:
+                self.dispatch(("toolbar",))
             elif key == pg.K_h:
                 self.hidden = True
             elif key == pg.K_TAB:
@@ -502,6 +523,8 @@ class App(Library):
                     if rect.collidepoint(pos):
                         self.dispatch(action)
                         return
+                if self.toolbar_open and self.layout.header.collidepoint(pos):
+                    return
                 if not self.history:
                     if self.choosing:
                         self.dispatch(("choose", self.focus))

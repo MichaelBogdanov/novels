@@ -64,6 +64,7 @@ class LibraryTests(unittest.TestCase):
         self.assertFalse(app.in_menu)
         app.visible = 7
         session = app.session
+        self.click(app, ("toolbar",))
         self.click(app, ("library",))
         app.update(0.1)
         self.assertEqual(app.visible, 7)

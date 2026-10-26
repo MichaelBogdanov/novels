@@ -130,7 +130,7 @@ class UITests(unittest.TestCase):
         self.assertEqual(self.app.session.current.node, "path")
 
     def test_wheel_scrolls_and_scaled_click_selects_last_option(self):
-        self.show_choices(15)
+        self.show_choices(30)
         app, pg = self.app, self.pg
         for size in ((800, 600), (1920, 1080), (2560, 1080), (720, 1280)):
             app.window = pg.display.set_mode(size, pg.RESIZABLE)
@@ -138,9 +138,9 @@ class UITests(unittest.TestCase):
             self.finish_node()
             app.render()
             self.wheel(-100)
-            self.assertEqual(app.focus, 14)
+            self.assertEqual(app.focus, 29)
             self.assertGreater(app.choice_scroll, 0)
-            rect = next(rect for rect, action in app.buttons if action == ("choose", 14))
+            rect = next(rect for rect, action in app.buttons if action == ("choose", 29))
             self.assertEqual(rect.height, app.choice_layout()[0][-1][2])
             # Verify actual inverse mapping through the input dispatcher.
             point = rect.center
@@ -306,9 +306,54 @@ class UITests(unittest.TestCase):
             app.update(0.1)
         self.assertEqual(app.sound.play.call_count, 3)
 
+    def test_toolbar_toggle_preserves_reading_and_blocks_panel_clicks(self):
+        app, pg = self.app, self.pg
+        self.assertFalse(app.toolbar_open)
+        self.assertEqual([action for _, action in app.buttons], [("toolbar",)])
+        app.visible = 7
+        frames = app.session.frames.copy()
+        for size in ((640, 480), (1280, 720), (1920, 1080), (1080, 1920)):
+            app.window = pg.display.set_mode(size, pg.RESIZABLE)
+            app.render()
+            self.assertLessEqual(app.layout.dialogue.height, size[1] * .25)
+            self.assertGreaterEqual(app.layout.body_size, 16)
+            toggle = app.layout.toolbar_toggle.center
+            app.event(pg.event.Event(pg.MOUSEBUTTONDOWN, button=1, pos=toggle))
+            app.render()
+            self.assertTrue(app.toolbar_open)
+            self.assertIn(("quit",), [action for _, action in app.buttons])
+            self.assertTrue(all(app.viewport.contains(rect) for rect, _ in app.buttons))
+            # The title/gap of the open panel isn't a story click target.
+            app.event(pg.event.Event(pg.MOUSEBUTTONDOWN, button=1, pos=(app.layout.header.x + 2, app.layout.header.y + 2)))
+            self.assertEqual(app.visible, 7)
+            self.key(pg.K_F2)
+            self.assertFalse(app.toolbar_open)
+            self.assertEqual(app.session.frames, frames)
+            self.assertEqual(app.visible, 7)
+
+    def test_toolbar_at_choice_does_not_choose_and_modal_blocks_toggle(self):
+        app, pg = self.app, self.pg
+        self.show_choices()
+        self.wheel(-1)
+        frames = app.session.frames.copy()
+        for _ in range(2):
+            app.event(pg.event.Event(pg.MOUSEBUTTONDOWN, button=1, pos=app.layout.toolbar_toggle.center))
+            app.render()
+            self.assertEqual(app.focus, 1)
+            self.assertEqual(app.session.frames, frames)
+        self.key(pg.K_TAB)
+        self.assertNotIn(("toolbar",), [action for _, action in app.buttons])
+        self.key(pg.K_F2)
+        self.assertFalse(app.toolbar_open)
+        self.key(pg.K_TAB)
+        # Existing free-area LMB still confirms the wheel-highlighted choice.
+        app.event(pg.event.Event(pg.MOUSEBUTTONDOWN, button=1, pos=(1, app.viewport.centery)))
+        self.assertEqual(app.session.current.node, "path")
+
     def test_native_layout_and_hitboxes_at_different_aspect_ratios(self):
         app, pg = self.app, self.pg
         font_sizes = {}
+        app.dispatch(("toolbar",))
         for size in ((640, 480), (1280, 720), (1920, 1080), (2560, 1440), (3440, 1440), (1080, 1920)):
             app.window = pg.display.set_mode(size, pg.RESIZABLE)
             app.render()
