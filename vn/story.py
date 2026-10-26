@@ -39,7 +39,7 @@ class Story:
         require(isinstance(settings, dict), "settings должен быть объектом")
         for key, low, high in [("text_speed", 1, 150), ("volume", 0, 1)]:
             value = settings.get(key, 36 if key == "text_speed" else 0.25)
-            require(type(value) in (int, float) and low <= value <= high, f"settings.{key}: допустимо {low}–{high}")
+            require(type(value) in (int, float) and low <= value <= high, f"settings.{key}: допустимо {low}-{high}")
         for key in ("font", "typing_sound"):
             if key in settings:
                 require(isinstance(settings[key], str), f"settings.{key}: нужен путь")
