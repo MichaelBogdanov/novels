@@ -90,12 +90,11 @@ class LibraryTests(unittest.TestCase):
         self.assertIs(app.session, session)
         self.assertTrue(app.menu_error)
 
-    def test_bundled_sound_mute_and_no_audio_device(self):
+    def test_synthesized_sound_mute_and_no_audio_device(self):
         story = make_story(self.root / "ready")
         app = App(story, stories_dir=self.root)
         self.assertIsNotNone(app.sound)
-        self.assertGreater(app.sound.get_length(), 0)
-        self.assertLess(app.sound.get_length(), 0.15)
+        self.assertAlmostEqual(app.sound.get_length(), 0.03, places=4)
         app.sound = Mock()
         app.dispatch(("mute",))
         app.update(0.1)

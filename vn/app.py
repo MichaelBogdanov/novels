@@ -1,5 +1,5 @@
 """Pygame presentation. All story-specific content lives in the story package."""
-from pathlib import Path
+from array import array
 from functools import lru_cache
 import math
 import re
@@ -76,8 +76,12 @@ class App(Library):
         self.sound = None
         if pg.mixer.get_init():
             try:
-                path = story.asset(settings["typing_sound"]) if "typing_sound" in settings else Path(__file__).parent / "assets/typing.wav"
-                self.sound = pg.mixer.Sound(str(path))
+                if "typing_sound" in settings:
+                    self.sound = pg.mixer.Sound(str(story.asset(settings["typing_sound"])))
+                else:
+                    samples = array("h", (int(2800 * math.sin(2 * math.pi * 740 * i / 44100)
+                                              * (1 - i / 1323) ** 2) for i in range(1323)))
+                    self.sound = pg.mixer.Sound(buffer=samples)
                 self.sound.set_volume(settings.get("volume", 0.25))
             except (OSError, pg.error) as exc:
                 warnings.warn(f"Звук недоступен: {exc}")
@@ -171,7 +175,6 @@ class App(Library):
             char = self.page_text[self.visible]
             self.visible += 1
             if not char.isspace() and self.sound and not self.muted:
-                self.sound.stop()  # Keep fast typing from stacking loud clicks.
                 self.sound.play()
 
     def advance(self):
