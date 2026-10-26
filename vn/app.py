@@ -4,6 +4,7 @@ from functools import lru_cache
 import math
 import re
 import warnings
+import os
 import pygame as pg
 from .story import Session, StoryError
 from .display import Display
@@ -11,10 +12,8 @@ from .layout import Layout
 from .text import paginate
 from .catalog import STORIES
 from .library import Library
+from .ui import ACCENT, INK, MUTED, SURFACE, RAISED, SELECTED, Feedback, mix, material, shadow, frost, system_font
 
-INK = (237, 238, 244)
-MUTED = (161, 174, 195)
-ACCENT = (137, 220, 206)
 ENDING = {"good": (137, 220, 186), "bad": (240, 145, 155), "neutral": (195, 187, 241)}
 ENDING_LABEL = {"good": "СВЕТЛЫЙ ФИНАЛ", "bad": "ТРАГИЧЕСКИЙ ФИНАЛ", "neutral": "НЕЙТРАЛЬНЫЙ ФИНАЛ"}
 
@@ -53,7 +52,10 @@ class App(Library):
         self.toolbar_open = False
         self.running = True
         self.buttons = []
-        self.font_path = pg.font.match_font("segoeui,dejavusans,arial")
+        self.feedback = Feedback()
+        self.feedback.reduced = os.environ.get("VN_REDUCED_MOTION") == "1"
+        self.solid_ui = os.environ.get("VN_REDUCED_TRANSPARENCY") == "1"
+        self.font_path = system_font()
         self.configure_layout()
         self.show_library()
         if story is not None:
@@ -69,9 +71,9 @@ class App(Library):
         self.story = story
         self.session = Session(story)
         self.in_menu = False
-        pg.display.set_caption(story.title)
+        pg.display.set_caption(story.title.replace(" · ", " - "))
         settings = story.data.get("settings", {})
-        self.font_path = str(story.asset(settings["font"])) if "font" in settings else pg.font.match_font("segoeui,dejavusans,arial")
+        self.font_path = str(story.asset(settings["font"])) if "font" in settings else system_font()
         self.speed = settings.get("text_speed", 36)
         self.sound = None
         if pg.mixer.get_init():
@@ -105,7 +107,12 @@ class App(Library):
         self.viewport = self.canvas.get_rect()
         self.font = pg.font.Font(self.font_path, self.layout.body_size)
         self.small = pg.font.Font(self.font_path, self.layout.small_size)
+        self.key_font = pg.font.Font(system_font(bold=True), self.layout.small_size)
+        self.key_font.set_bold(True)
         self.label = pg.font.Font(self.font_path, self.layout.label_size)
+        self.label.set_bold(True)
+        self.heading = pg.font.Font(system_font(bold=True), round(self.layout.body_size * 2.0))
+        self.ui_title = pg.font.Font(system_font(bold=True), round(self.layout.body_size * 1.3))
         self.line_height = self.font.get_linesize()
         self.history_step = self.small.get_linesize() * 2 + self.layout.pad * 2 + self.layout.gap
 
@@ -116,6 +123,7 @@ class App(Library):
         ratio = max(w / sw, h / sh)
         scaled = pg.transform.smoothscale(source, (math.ceil(sw * ratio), math.ceil(sh * ratio)))
         self.background = scaled.subsurface(((scaled.get_width() - w) // 2, (scaled.get_height() - h) // 2, w, h)).copy()
+        self.frosted_background = frost(self.background)
 
     def reflow_text(self):
         text = self.session.node["text"]
@@ -129,10 +137,12 @@ class App(Library):
         if self.canvas.get_size() == self.window.get_size() and self.layout.toolbar_open == self.toolbar_open:
             return False
         visible = getattr(self, "visible", 0)
+        resized = self.canvas.get_size() != self.window.get_size()
         self.configure_layout()
         if self.story is None:
             return True
-        self.fit_background()
+        if resized:
+            self.fit_background()
         self.reflow_text()
         self.visible = min(visible, len(self.page_text))
         if self.choosing:
@@ -162,6 +172,7 @@ class App(Library):
         return self.complete and self.last_page and "choices" in self.session.node
 
     def update(self, dt):
+        self.feedback.step(dt)
         if self.in_menu or self.hidden or self.history or self.complete:
             return
         self.timer += min(dt, 0.1)
@@ -195,24 +206,51 @@ class App(Library):
     def text(self, text, pos, font=None, color=INK):
         self.canvas.blit((font or self.font).render(text, True, color), pos)
 
-    def panel(self, rect, alpha=220, color=(14, 21, 34), radius=20):
+    def panel(self, rect, alpha=225, color=SURFACE, radius=20, glass=False):
         rect = pg.Rect(rect)
-        layer = pg.Surface(rect.size, pg.SRCALPHA)
-        pg.draw.rect(layer, (*color, alpha), layer.get_rect(), border_radius=radius)
-        pg.draw.rect(layer, (190, 214, 240, 36), layer.get_rect(), 1, border_radius=radius)
-        self.canvas.blit(layer, rect)
+        if rect.width <= 0 or rect.height <= 0:
+            return
+        if glass:
+            self.canvas.blit(shadow(rect.size, radius), (rect.x - 10, rect.y - 8))
+            if not self.solid_ui and not self.in_menu and self.viewport.contains(rect):
+                layer = self.frosted_background.subsurface(rect).copy().convert_alpha()
+                mask = material(rect.size, (255, 255, 255), 255, radius)
+                layer.blit(mask, (0, 0), special_flags=pg.BLEND_RGBA_MULT)
+                self.canvas.blit(layer, rect)
+        self.canvas.blit(material(rect.size, color, alpha, radius, self.solid_ui), rect)
 
-    def button(self, rect, label, action, enabled=True, active=False):
+    def button(self, rect, label, action, enabled=True, active=False, shortcut=None):
         rect = pg.Rect(rect)
         hover = rect.collidepoint(self.mouse()) and enabled
-        self.panel(rect, 245 if hover else 210, (38, 66, 75) if hover or active else (20, 30, 46), 10)
-        text = self.small.render(self.elide(label, self.small, rect.width - self.layout.gap), True, ACCENT if enabled else (91, 104, 122))
-        self.canvas.blit(text, text.get_rect(center=rect.center))
+        amount = self.feedback.value(("button", action), hover or active)
+        self.panel(rect, 245, mix(RAISED, SELECTED, amount), max(8, self.layout.pad))
+        if active:
+            pg.draw.rect(self.canvas, ACCENT, rect, 1, border_radius=max(8, self.layout.pad))
+        color = INK if enabled else (123, 130, 146)
+        key = self.key_font.render(shortcut, True, color) if shortcut else None
+        gap = self.layout.gap if key else 0
+        available = rect.width - self.layout.pad - (key.get_width() + gap if key else 0)
+        text = self.small.render(self.elide(label, self.small, available), True, color)
+        width = text.get_width() + (key.get_width() + gap if key else 0)
+        x = rect.centerx - width // 2
+        self.canvas.blit(text, (x, rect.centery - text.get_height() // 2))
+        if key:
+            self.canvas.blit(key, (x + text.get_width() + gap, rect.centery - key.get_height() // 2))
         if enabled:
             self.buttons.append((rect, action))
 
     def mouse(self, pos=None):
         return pos if pos is not None else pg.mouse.get_pos()
+
+    def scrollbar(self, area, total, offset):
+        if total <= area.height:
+            return
+        track = pg.Rect(area.right + self.layout.gap, area.y, max(3, self.layout.pad // 4), area.height)
+        pg.draw.rect(self.canvas, RAISED, track, border_radius=2)
+        height = min(area.height, max(18, round(area.height * area.height / total)))
+        position = max(0, min(1, offset / (total - area.height)))
+        thumb = pg.Rect(track.x, area.y + round((area.height - height) * position), track.width, height)
+        pg.draw.rect(self.canvas, MUTED, thumb, border_radius=2)
 
     @staticmethod
     def elide(value, font, width):
@@ -234,17 +272,24 @@ class App(Library):
         self.canvas.blit(self.background, (0, 0))
         if not self.hidden:
             l, p = self.layout, self.layout.pad
-            self.button(l.toolbar_toggle, "Свернуть · F2" if self.toolbar_open else "Меню · F2",
-                        ("toolbar",), active=self.toolbar_open)
+            title = self.elide(self.story.title.partition(" · ")[0], self.small, l.story_title.width - p * 2)
+            title_rect = l.story_title.copy()
+            title_rect.width = self.small.size(title)[0] + p * 2
+            self.panel(title_rect, 215, radius=l.button_height // 2, glass=True)
+            self.text(title, (title_rect.x + p, title_rect.centery - self.small.get_height() // 2), self.small)
+            self.button(l.toolbar_toggle, "Свернуть" if self.toolbar_open else "Меню",
+                        ("toolbar",), active=self.toolbar_open, shortcut="F2")
             if self.toolbar_open:
-                self.panel(l.header, 185, radius=p)
-                self.text(self.elide(self.story.title, self.label, l.title.width), l.title.topleft, self.label)
-                labels = ["Окно · F11" if self.display.fullscreen else "Экран · F11",
-                          "Назад · ←", "Журнал · Tab", "Скрыть · H",
-                          "Звук: выкл · M" if self.muted else "Звук: вкл · M", "Истории", "Выход"]
-                for rect, label, action in zip(l.toolbar, labels, ("fullscreen", "back", "history", "hide", "mute", "library", "quit")):
-                    self.button(rect, label, (action,), action != "back" or len(self.session.frames) > 1)
-            self.panel(l.dialogue, 218, radius=p)
+                self.panel(l.header, 235, radius=p * 2, glass=True)
+                self.text(self.elide(self.story.title.replace(" · ", " - "), self.label, l.title.width),
+                          (l.title.x, l.title.centery - self.label.get_height() // 2), self.label)
+                labels = ["Окно" if self.display.fullscreen else "Экран",
+                          "Назад", "Журнал", "Скрыть",
+                          "Звук: выкл" if self.muted else "Звук: вкл", "Истории", "Выход"]
+                shortcuts = ("F11", "←", "Tab", "H", "M", None, None)
+                for rect, label, action, shortcut in zip(l.toolbar, labels, ("fullscreen", "back", "history", "hide", "mute", "library", "quit"), shortcuts):
+                    self.button(rect, label, (action,), action != "back" or len(self.session.frames) > 1, shortcut=shortcut)
+            self.panel(l.dialogue, 225, radius=p * 2, glass=True)
             speaker = self.session.node.get("speaker", "") or "Повествование"
             self.text(self.elide(speaker, self.label, l.body.width), l.speaker, self.label, ACCENT)
             self.canvas.set_clip(l.body)
@@ -252,11 +297,11 @@ class App(Library):
                 count = max(0, self.visible - (span.start - self.page.start))
                 self.text(line[:count], (l.body.x, l.body.y + i * self.line_height))
             self.canvas.set_clip(None)
-            hint = "ЛКМ / пробел — показать текст"
+            hint = "ЛКМ / пробел - показать текст"
             if self.complete:
-                hint = "Выберите продолжение" if self.choosing else "ЛКМ / пробел — продолжить"
+                hint = "Выберите продолжение" if self.choosing else "ЛКМ / пробел - продолжить"
                 if self.last_page and "ending" in self.session.node:
-                    hint = "Конец истории · можно вернуться к выбору"
+                    hint = "Конец истории - можно вернуться к выбору"
             counter = f"{self.session.current.page + 1} / {self.session.current.page + len(self.pages)}"
             counter_width = self.small.size(counter)[0]
             self.text(self.elide(hint, self.small, l.body.width - counter_width - p),
@@ -287,26 +332,29 @@ class App(Library):
         bounds = self.layout.choice_bounds
         height = min(bounds.height, max(1, total))
         self.layout.choices = pg.Rect(bounds.x, bounds.bottom - height, bounds.width, height)
-        self.layout.choice_heading_y = self.layout.choices.top - self.layout.small_size * (3 if self.layout.compact else 2)
+        self.layout.choice_heading_y = self.layout.choices.top - self.layout.choice_heading_height - self.layout.gap
+        self.layout.choice_header = pg.Rect(bounds.x, self.layout.choice_heading_y,
+                                            bounds.width, self.layout.choice_heading_height)
 
     def draw_choices(self):
         self.fit_choices()
         area = self.layout.choices
         l, p = self.layout, self.layout.pad
-        self.panel((area.x - l.gap, l.choice_heading_y - l.gap // 2,
-                    area.width + l.gap * 2, area.y - l.choice_heading_y), 225, radius=l.gap)
-        heading = f"ВАШ ВЫБОР · {self.focus + 1} / {len(self.session.node['choices'])}"
-        self.text(heading, (area.x, l.choice_heading_y), self.small, ACCENT)
-        hint = "Колесо / ↑ ↓ — выделить · Enter / ЛКМ — выбрать"
-        hint_x = area.x if l.compact else area.x + area.width // 2
-        hint_y = l.choice_heading_y + self.small.get_linesize() if l.compact else l.choice_heading_y
-        self.text(self.elide(hint, self.small, area.right - hint_x), (hint_x, hint_y), self.small, MUTED)
+        self.panel(l.choice_header, 245, radius=12)
+        heading = f"Ваш выбор   {self.focus + 1} / {len(self.session.node['choices'])}"
+        heading_y = l.choice_header.y + l.gap if l.compact else l.choice_header.centery - self.small.get_height() // 2
+        self.text(heading, (area.x + p, heading_y), self.small, ACCENT)
+        hint = "Колесо / ↑ ↓ - выделить, Enter / ЛКМ - выбрать"
+        hint_x = area.x + p if l.compact else area.x + area.width // 2
+        hint_y = heading_y + self.small.get_linesize() if l.compact else heading_y
+        self.text(self.elide(hint, self.small, area.right - p - hint_x), (hint_x, hint_y), self.small, MUTED)
         layout, total = self.choice_layout()
         self.choice_scroll = max(0, min(self.choice_scroll, max(0, total - area.height)))
         self.canvas.set_clip(area)
         for i, y, height, lines in layout:
             rect = pg.Rect(area.x, area.y + y - self.choice_scroll, area.width, height)
-            self.panel(rect, 239, (31, 57, 65) if i == self.focus else (18, 28, 44), 12)
+            amount = self.feedback.value(("choice", i), i == self.focus)
+            self.panel(rect, 245, mix(SURFACE, SELECTED, amount), 12)
             if i == self.focus:
                 pg.draw.rect(self.canvas, ACCENT, rect, 2, border_radius=12)
             self.text(f"{i + 1:02}", (rect.x + p, rect.y + p), self.small, ACCENT)
@@ -316,12 +364,7 @@ class App(Library):
             if clipped.height:
                 self.buttons.append((clipped, ("choose", i)))
         self.canvas.set_clip(None)
-        if total > area.height:
-            track = pg.Rect(area.right + self.layout.gap, area.y, max(3, p // 4), area.height)
-            pg.draw.rect(self.canvas, (45, 61, 77), track, border_radius=2)
-            thumb_height = max(18, round(area.height * area.height / total))
-            thumb_y = area.y + round((area.height - thumb_height) * self.choice_scroll / (total - area.height))
-            pg.draw.rect(self.canvas, ACCENT, (track.x, thumb_y, track.width, thumb_height), border_radius=2)
+        self.scrollbar(area, total, self.choice_scroll)
 
     def move_choice(self, delta, wrap_around=False):
         self.fit_choices()
@@ -364,7 +407,7 @@ class App(Library):
         ending = self.session.node["ending"]
         l, p = self.layout, self.layout.pad
         rect = l.ending
-        self.panel(rect, 236, radius=p)
+        self.panel(rect, 240, radius=p * 2, glass=True)
         self.text(ENDING_LABEL[ending["type"]], (rect.x + p, rect.y + p), self.label, ENDING[ending["type"]])
         button_y = rect.bottom - p - l.button_height
         width = (rect.width - p * 3) // 2
@@ -390,28 +433,31 @@ class App(Library):
         l, p = self.layout, self.layout.pad
         rect, area = l.history, l.history_area
         self.panel(self.canvas.get_rect(), 210, (4, 8, 15), 0)
-        self.panel(rect, 250, radius=p)
+        self.panel(rect, 250, radius=p * 2)
         title_width = l.history_close.x - rect.x - p * 2
         self.text(self.elide("История прохождения", self.font, title_width), (rect.x + p, rect.y + p), self.font)
         self.text(self.elide("Нажмите запись для возврата. Следующие шаги будут отменены.", self.small, area.width),
                   (area.x, area.y - p - self.small.get_linesize()), self.small, MUTED)
-        self.button(l.history_close, "Закрыть · Tab", ("history",))
+        self.button(l.history_close, "Закрыть", ("history",), shortcut="Tab")
         self.scroll = max(0, min(self.scroll, max(0, len(self.session.frames) * self.history_step - area.height)))
         self.canvas.set_clip(area)
         for index, frame in enumerate(self.session.frames):
             row = pg.Rect(area.x, area.y + index * self.history_step - self.scroll, area.width, self.history_step - l.gap)
             if not row.colliderect(area):
                 continue
-            self.panel(row, 255, (26, 44, 58), p // 2)
+            current = index == len(self.session.frames) - 1
+            amount = self.feedback.value(("history", index), current or row.collidepoint(self.mouse()))
+            self.panel(row, 255, mix(RAISED, SELECTED, amount), p)
             node = self.story.nodes[frame.node]
-            head = f"{index + 1:02} · {node.get('speaker') or 'Повествование'} · стр. {frame.page + 1}"
+            head = f"{index + 1:02} - {node.get('speaker') or 'Повествование'}, страница {frame.page + 1}"
             if frame.choice:
-                head = f"{index + 1:02} · Выбор: {frame.choice}"
+                head = f"{index + 1:02} - Выбор: {frame.choice}"
             self.text(self.elide(head, self.small, row.width - p * 2), (row.x + p, row.y + p), self.small, ACCENT)
             self.text(self.elide(node["text"][frame.offset:], self.small, row.width - p * 2),
                       (row.x + p, row.y + p + self.small.get_linesize()), self.small, INK)
             self.buttons.append((row.clip(area), ("rewind", index)))
         self.canvas.set_clip(None)
+        self.scrollbar(area, len(self.session.frames) * self.history_step, self.scroll)
 
     def dispatch(self, action):
         kind = action[0]
@@ -438,6 +484,11 @@ class App(Library):
         elif kind == "fullscreen":
             self.window = self.display.toggle()
             self.ensure_layout()
+        elif kind == "motion":
+            self.feedback.reduced = not self.feedback.reduced
+            self.feedback.step(0)
+        elif kind == "transparency":
+            self.solid_ui = not self.solid_ui
         elif kind == "choose":
             self.session.advance(action[1])
             self.load_frame()
@@ -460,6 +511,8 @@ class App(Library):
             self.render()  # Rebuild hitboxes before processing a click after resize.
         if event.type == pg.QUIT:
             self.running = False
+        elif event.type == pg.KEYDOWN and event.key in (pg.K_F6, pg.K_F7):
+            self.dispatch(("motion" if event.key == pg.K_F6 else "transparency",))
         elif event.type == pg.KEYDOWN and (event.key == pg.K_F11 or (event.key == pg.K_RETURN and getattr(event, "mod", 0) & pg.KMOD_ALT)):
             self.dispatch(("fullscreen",))
         elif self.in_menu:
