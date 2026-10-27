@@ -17,6 +17,10 @@ __pycache__/
 !/stories/forest_escape/
 !/stories/outbreak/
 !/stories/jurassic_day/
+!/stories/first_extreme/
+!/stories/noir_alley/
+!/stories/enchanted_castle/
+!/stories/forest_rescue/
 
 # Production notes and verification output are not playable story assets.
 /stories/*/production/
