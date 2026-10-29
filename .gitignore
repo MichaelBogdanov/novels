@@ -21,6 +21,7 @@ __pycache__/
 !/stories/noir_alley/
 !/stories/enchanted_castle/
 !/stories/forest_rescue/
+!/stories/camp_choices/
 
 # Production notes and verification output are not playable story assets.
 /stories/*/production/
